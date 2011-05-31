@@ -51,6 +51,8 @@
          encode_handoff_item/2,
          handle_exit/3]).
 
+-export([do_fold/5]).
+
 -include_lib("riak_kv_vnode.hrl").
 -include_lib("riak_kv_map_phase.hrl").
 -include_lib("riak_core/include/riak_core_pb.hrl").
@@ -68,7 +70,9 @@
                 mod :: module(),
                 modstate :: term(),
                 mrjobs :: term(),
-                in_handoff = false :: boolean()}).
+                in_handoff = false :: boolean(),
+                checked_for_predecessor = false :: boolean(),
+                predecessor :: pid() | undefined}).
 
 -record(putargs, {returnbody :: boolean(),
                   lww :: boolean(),
@@ -174,8 +178,57 @@ handle_command(?KV_PUT_REQ{bkey=BKey,
     do_put(Sender, BKey,  Object, ReqId, StartTime, Options, State),
     {noreply, State};
 
-handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},Sender,State) ->
+handle_command(?KV_GET_REQ{}=Req, Sender,
+               State=#state{idx=Index,
+                            checked_for_predecessor=false}) ->
+    %% Figure out if this new vnode has a predecessor because of node
+    %% join/leave.
+    Nodes = nodes(),
+    IdxPids2 =
+        lists:flatten([rpc:call(Node, riak_core_vnode_master,
+                                all_nodes, [?MODULE]) || Node <- Nodes]),
+    Predecessor = 
+        case lists:keyfind(Index, 1, IdxPids2) of
+            {_, Pid} ->
+                error_logger:error_msg("new vnode found predecessor: ~p~n", [Pid]),
+                Pid;
+            false ->
+                error_logger:error_msg("new vnode didn't find  predecessor: ~n", []),
+                undefined
+        end,
+    handle_command(Req, Sender, State#state{checked_for_predecessor=true,
+                                            predecessor=Predecessor});
+
+handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},
+               Sender,State=#state{predecessor=undefined}) ->
     do_get(Sender, BKey, ReqId, State);
+
+handle_command(?KV_GET_REQ{bkey=BKey,req_id=ReqId},_Sender,
+               State=#state{mod=Mod,
+                            modstate=ModState,
+                            idx=Idx,
+                            predecessor=Predecessor}) ->
+    {Retval, NewState} =
+        case do_get_term(BKey, Mod, ModState) of
+            {ok, _} = R ->
+                {R, State};
+            R ->
+                case try_remote(Predecessor, BKey, Idx) of
+                    noproc ->
+                        error_logger:error_msg("predecessor is dead~n"),
+                        {R, State#state{predecessor=undefined}};
+                    {ok, Obj} ->
+                        %% Write data locally to avoid remote gets, at
+                        %% this point we know the data doesn't exist
+                        %% locally so just write it "as is" (i.e. no
+                        %% need to do any reconciliation)
+                        ok = Mod:put(ModState, BKey, term_to_binary(Obj)),
+                        {{ok,Obj}, State}
+                end
+        end,
+
+    {reply, {r, Retval, Idx, ReqId}, NewState};
+
 handle_command(?KV_MGET_REQ{bkeys=BKeys, req_id=ReqId, from=From}, _Sender, State) ->
     do_mget(From, BKeys, ReqId, State);
 handle_command(#riak_kv_listkeys_req_v1{bucket=Bucket, req_id=ReqId}, _Sender,
@@ -206,6 +259,18 @@ handle_command(?KV_DELETE_REQ{bkey=BKey, req_id=ReqId}, _Sender,
     end;
 handle_command(?KV_VCLOCK_REQ{bkeys=BKeys}, _Sender, State) ->
     {reply, do_get_vclocks(BKeys, State), State};
+
+handle_command(?FOLD_REQ{foldfun=Fun, acc0=Acc},
+               Sender,
+               State=#state{in_handoff=true,
+                            modstate={Ref,_}}) ->
+    %% Need to get the bc_state stored in the vnode's process
+    %% dictionary and inject it into the spawned pid or else bitcask
+    %% will not grant it access.
+    BEState = erlang:get(Ref),
+    proc_lib:spawn_link(?MODULE, do_fold, [Fun, Acc, State, Sender, BEState]),
+    {noreply, State};
+
 handle_command(?FOLD_REQ{foldfun=Fun, acc0=Acc},_Sender,State) ->
     Reply = do_fold(Fun, Acc, State),
     {reply, Reply, State};
@@ -279,6 +344,9 @@ terminate(_Reason, #state{mod=Mod, modstate=ModState}) ->
     Mod:stop(ModState),
     ok.
 
+handle_exit(_Pid, normal, State) ->
+    %% Assuming the fold process died, no reason to crash here
+    {noreply, State};
 handle_exit(_Pid, _Reason, State) ->    
     %% A linked processes has died so the vnode
     %% process should take appropriate action here.
@@ -525,6 +593,11 @@ buffer_key_result(Caller, ReqId, Idx, Acc) ->
 do_fold(Fun, Acc0, _State=#state{mod=Mod, modstate=ModState}) ->
     Mod:fold(ModState, Fun, Acc0).
 
+do_fold(Fun, Acc0, _State=#state{mod=Mod, modstate={Ref,_}=ModState}, From, BEState) ->
+    erlang:put(Ref, BEState),
+    Reply = Mod:fold(ModState, Fun, Acc0),
+    riak_core_vnode:reply(From, Reply).
+
 %% @private
 do_get_vclocks(KeyList,_State=#state{mod=Mod,modstate=ModState}) ->
     [{BKey, do_get_vclock(BKey,Mod,ModState)} || BKey <- KeyList].
@@ -554,6 +627,22 @@ do_diffobj_put(BKey={Bucket,_}, DiffObj,
     end.
 
 %% @private
+try_remote(Predecessor, BKey, Index) ->
+    Ref = make_ref(),
+    Msg = ?KV_GET_REQ{bkey=BKey,req_id=Ref},
+    Sender = {fsm, undefined, self()},
+    gen_fsm:send_event(Predecessor,
+                       riak_core_vnode_master:make_request(Msg,
+                                                           Sender,
+                                                           Index)),
+
+    receive
+        {'$gen_event', {r, Val, _Idx, Ref}} ->
+            Val
+    after 5000 ->
+            error_logger:error_msg("try_remote timeout~n"),
+            noproc
+    end.
 
 -ifdef(TEST).
 
