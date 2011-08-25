@@ -32,6 +32,7 @@
          get/3,
          put/5,
          delete/4,
+         range/4,
          drop/1,
          fold_buckets/4,
          fold_keys/4,
@@ -290,6 +291,20 @@ drop(#state{data_root=DataRoot}=State) ->
             {error, Reason, State}
     end.
 
+range(#state{ref=Ref}, Start0, End0, Limit) ->
+    Start = sext:encode(Start0),
+    End = sext:encode(End0),
+    {ok, Itr} = eleveldb:iterator(Ref, []),
+
+    case eleveldb:iterator_move(Itr, Start) of
+        %% Start is after last key
+        {error, invalid_iterator} -> range_end(Itr, []);
+        {ok, Key, Val} ->
+            if Key =< End -> range_itr(Itr, End, Limit - 1, [{Key, Val}]);
+               true       -> range_end(Itr, [])
+            end
+    end.
+
 %% @doc Returns true if this eleveldb backend contains any
 %% non-tombstone values; otherwise returns false.
 -spec is_empty(state()) -> boolean() | {error, term()}.
@@ -494,6 +509,19 @@ from_index_key(LKey) ->
             undefined
     end.
 
+range_itr(Itr, _End, 0, Acc) -> range_end(Itr, Acc);
+
+range_itr(Itr, End, N, Acc) ->
+    case eleveldb:iterator_move(Itr, next) of
+        {ok, K, V} when K =< End  -> range_itr(Itr, End, N-1, [{K,V}|Acc]);
+        {error, invalid_iterator} -> range_end(Itr, Acc);
+        {ok, _K, _V}              -> range_end(Itr, Acc)
+    end.
+
+range_end(Itr, Acc) ->
+    eleveldb:iterator_close(Itr),
+    lists:reverse(Acc).
+
 %% ===================================================================
 %% EUnit tests
 %% ===================================================================
@@ -542,5 +570,33 @@ cleanup(_) ->
     ?_assertCmd("rm -rf test/eleveldb-backend").
 
 -endif. % EQC
+
+range_test() ->
+    ?assertCmd("rm -rf test/leveldb-backend"),
+    application:set_env(eleveldb, data_root, "test/leveldb-backend"),
+    L = 10,
+    {ok, S} = start(0, []),
+    {A, AL} = {{<<"ppl">>, <<"andy">>}, <<"san francisco">>},
+    {J, JL} = {{<<"ppl">>, <<"joe">>}, <<"denver">>},
+    {R, RL} = {{<<"ppl">>, <<"ryan">>}, <<"baltimore">>},
+    {Ad, AdL} = {{<<"ppl">>, <<"andrew">>}, <<"upstate new york">>},
+    Mk = fun(X) -> {<<"ppl">>, X} end,
+    Vals = fun(Pairs) -> [V || {_K, V} <- Pairs] end,
+
+    ?MODULE:put(S, A, AL),
+    ?MODULE:put(S, J, JL),
+    ?MODULE:put(S, R, RL),
+    ?MODULE:put(S, Ad, AdL),
+    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Ad, R, L))),
+    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Ad, Mk(<<"z">>), L))),
+    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), L))),
+    ?assertEqual([AdL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 1))),
+    ?assertEqual([AdL, AL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 2))),
+    ?assertEqual([AdL, AL, JL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 3))),
+    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 4))),
+    ?assertEqual([AL, JL], Vals(range(S, A, J, L))),
+    ?assertEqual([AL], Vals(range(S, A, A, L))),
+    ?assertEqual([], Vals(range(S, Mk(<<"alex">>), Mk(<<"ali">>), L))),
+    ?assertEqual([], Vals(range(S, Mk(<<"tom">>), Mk(<<"zoey">>), L))).
 
 -endif.
