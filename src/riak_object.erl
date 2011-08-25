@@ -28,11 +28,11 @@
 -endif.
 -include("riak_kv_wm_raw.hrl").
 
--export_type([riak_object/0, bucket/0, key/0, value/0]).
+-export_type([riak_object/0, bucket/0, key/0, bkey/0, value/0]).
 
 -type key() :: binary().
 -type bucket() :: binary().
-%% -type bkey() :: {bucket(), key()}.
+-type bkey() :: {bucket(), key()}.
 -type value() :: term().
 
 -record(r_content, {

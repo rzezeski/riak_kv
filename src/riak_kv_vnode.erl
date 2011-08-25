@@ -457,7 +457,19 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
             end;
         false ->
             {reply, {error, {indexes_not_supported, Mod}}, State}
-    end.
+    end;
+
+handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
+                              limit=Limit,
+                              start_key=StartKey,
+                              end_key=EndKey},
+                FilterVNodes,
+                Sender,
+                State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
+    FilterVNode = proplists:get_value(Idx, FilterVNodes),
+    Filter = riak_kv_coverage_filter:build_filter(Bucket, none, FilterVNode),
+    range(Sender, Bucket, StartKey, EndKey, Limit, Filter, Mod, ModState),
+    {noreply, State}.
 
 %% Convenience for handling both v3 and v4 coverage-based listkeys
 handle_coverage_listkeys(Bucket, ItemFilter, ResultFun,
@@ -503,7 +515,6 @@ handle_handoff_command(Req=?KV_PUT_REQ{}, Sender, State) ->
 %% Handle all unspecified cases locally without forwarding
 handle_handoff_command(Req, Sender, State) ->
     handle_command(Req, Sender, State).
-
 
 handoff_starting(_TargetNode, State) ->
     {true, State#state{in_handoff=true}}.
@@ -917,6 +928,17 @@ finish_fun(BufferMod, Sender) ->
     fun(Buffer) ->
             finish_fold(BufferMod, Buffer, Sender)
     end.
+
+range(Sender, Bucket, StartKey, EndKey, Limit, Filter, Mod, ModState) ->
+    Start = {Bucket, StartKey},
+    End = {Bucket, EndKey},
+    Res =
+        case Filter of
+            none -> Mod:range(ModState, Start, End, Limit);
+            _ ->
+                lists:foldl(Filter, [], Mod:range(ModState, Start, End, Limit))
+        end,
+    riak_core_vnode:reply(Sender, {final_results, Res}).
 
 %% @private
 finish_fold(BufferMod, Buffer, Sender) ->

@@ -58,6 +58,13 @@
           bkeys = [] :: [{binary(), binary()}]
          }).
 
+-record(riak_kv_range_req_v1, {
+          bucket        :: riak_object:bucket(),
+          limit         :: 1..100000,
+          start_key     :: riak_object:bkey(),
+          end_key       :: riak_object:bkey()
+         }).
+
 -define(KV_PUT_REQ, #riak_kv_put_req_v1).
 -define(KV_GET_REQ, #riak_kv_get_req_v1).
 -define(KV_MGET_REQ, #riak_kv_mget_req_v1).
@@ -68,3 +75,4 @@
 -define(KV_DELETE_REQ, #riak_kv_delete_req_v1).
 -define(KV_MAP_REQ, #riak_kv_map_req_v1).
 -define(KV_VCLOCK_REQ, #riak_kv_vclock_req_v1).
+-define(KV_RANGE_REQ, #riak_kv_range_req_v1).

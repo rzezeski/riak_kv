@@ -105,6 +105,10 @@ init([]) ->
     IndexFsmSup = {riak_kv_index_fsm_sup,
                    {riak_kv_index_fsm_sup, start_link, []},
                    permanent, infinity, supervisor, [riak_kv_index_fsm_sup]},
+    RangeFsmSup = {riak_kv_range_fsm_sup,
+                   {riak_kv_range_fsm_sup, start_link, []},
+                   permanent, infinity, supervisor, [riak_kv_range_fsm_sup]},
+
     %% @TODO This code is only here to support
     %% rolling upgrades and will be removed.
     LegacyKeysFsmSup = {riak_kv_keys_fsm_legacy_sup,
@@ -128,6 +132,7 @@ init([]) ->
         BucketsFsmSup,
         KeysFsmSup,
         IndexFsmSup,
+        RangeFsmSup,
         LegacyKeysFsmSup,
         KLSup,
         KLMaster,
