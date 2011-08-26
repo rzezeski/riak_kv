@@ -23,6 +23,7 @@
 %% @doc service protocol buffer clients
 
 -module(riak_kv_pb_socket).
+-include("riak_kv.hrl").
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -213,6 +214,23 @@ handle_info({flow_results, PhaseId, ReqId, Res},
 
 handle_info({flow_error, ReqId, Error},
             State=#state{sock = Socket, req=#rpbmapredreq{}, req_ctx=ReqId}) ->
+    NewState = send_error("~p", [Error], State),
+    inet:setopts(Socket, [{active, once}]),
+    {noreply, NewState#state{req = undefined, req_ctx = undefined}};
+
+handle_info({ReqId, ?RANGE_COMPLETE},
+            State=#state{sock = Socket, req=#rpbrangereq{}, req_ctx=ReqId}) ->
+    NewState = send_msg(#rpbrangeresp{done = 1}, State),
+    inet:setopts(Socket, [{active, once}]),
+    {noreply, NewState#state{req = undefined, req_ctx = undefined}};
+handle_info({ReqId, {?RANGE_RESULTS, []}}, State=#state{req=#rpbrangereq{},
+                                                        req_ctx=ReqId}) ->
+    {noreply, State};
+handle_info({ReqId, {?RANGE_RESULTS, Res}}, State=#state{req=#rpbrangereq{},
+                                                         req_ctx=ReqId}) ->
+    {noreply, send_msg(#rpbrangeresp{results = term_to_binary(Res)}, State)};
+handle_info({ReqId, Error},
+            State=#state{sock = Socket, req=#rpbrangereq{}, req_ctx=ReqId}) ->
     NewState = send_error("~p", [Error], State),
     inet:setopts(Socket, [{active, once}]),
     {noreply, NewState#state{req = undefined, req_ctx = undefined}};
@@ -472,7 +490,13 @@ process_message(#rpbmapredreq{request=MrReq, content_type=ContentType}=Req,
                 legacy ->
                     legacy_mapreduce(Req, State, Inputs, Query, Timeout)
             end
-    end.
+    end;
+
+process_message(#rpbrangereq{bucket=B, limit=L, start_key=S, end_key=E}=Req,
+                #state{client=C} = State) ->
+    {ok, ReqId} = C:range(B, S, E, [{limit, L}, stream]),
+    {pause, State#state{req = Req, req_ctx = ReqId}}.
+
 
 pipe_mapreduce(Req, State, Inputs, Query, Timeout) ->
     try riak_kv_mrc_pipe:mapred_stream(Query) of
