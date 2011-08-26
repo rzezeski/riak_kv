@@ -25,6 +25,8 @@
 -module(riak_client, [Node,ClientId]).
 -author('Justin Sheehy <justin@basho.com>').
 
+-include("riak_kv.hrl").
+
 -export([mapred/2,mapred/3,mapred/4]).
 -export([mapred_stream/2,mapred_stream/3,mapred_stream/4]).
 -export([mapred_bucket/2,mapred_bucket/3,mapred_bucket/4]).
@@ -43,6 +45,7 @@
 -export([list_buckets/0,list_buckets/2]).
 -export([get_index/3,get_index/2]).
 -export([stream_get_index/3,stream_get_index/2]).
+-export([range/3, range/4]).
 -export([set_bucket/2,get_bucket/1]).
 -export([reload_all/1]).
 -export([remove_from_cluster/1]).
@@ -702,6 +705,69 @@ stream_get_index(Bucket, Query, Timeout) ->
     ReqId = mk_reqid(),
     riak_kv_index_fsm_sup:start_index_fsm(Node, [{raw, ReqId, Me}, [Bucket, none, Query, Timeout, plain]]),
     {ok, ReqId}.
+
+%% @doc Get objects from `Bucket' with keys in range from `StartKey'
+%% to `EndKey', inclusive.
+%%
+%% Options
+%%
+%%   `limit' - Upper limit on number of objects to return.
+%%
+%%   `timeout' - Timeout in milliseconds.
+%%
+%%   `stream' - Whether or not to stream the results.
+%%
+%%   `client' - Pid to send results to.
+-spec range(riak_object:bucket(), riak_object:key(), riak_object:key()) ->
+                   range_result().
+range(Bucket, StartKey, EndKey) ->
+    range(Bucket, StartKey, EndKey, []).
+
+-spec range(riak_object:bucket(), riak_object:key(), riak_object:key(),
+            range_opts()) -> stream_ref() | range_result().
+range(Bucket, StartKey, EndKey, Opts) ->
+    Limit = proplists:get_value(limit, Opts, ?DEFAULT_RANGE_LIMIT),
+    Stream = proplists:get_bool(stream, Opts),
+    Timeout = proplists:get_value(timeout, Opts, ?DEFAULT_TIMEOUT),
+    Client = proplists:get_value(client, Opts, self()),
+    ReqId = mk_reqid(),
+    Id = {raw, ReqId, Client},
+
+    riak_kv_range_fsm_sup:start_range_fsm(Node,
+                                          [Id,
+                                           [Bucket, StartKey, EndKey,
+                                            Limit, Timeout]]),
+    if Stream -> {ok, ReqId};
+       true -> collect_range(ReqId, Limit, Timeout)
+    end.
+
+%% @private
+-spec collect_range(reqid(), range_limit(), timeout()) ->
+                           error() | range_result().
+collect_range(ReqId, Limit, Timeout) ->
+    collect_range(ReqId, Limit, Timeout, []).
+
+%% @private
+-spec collect_range(reqid(), range_limit(), timeout(), list()) ->
+                           error() | range_result().
+collect_range(ReqId, Limit, Timeout, Acc) ->
+    receive
+        {ReqId, ?RANGE_COMPLETE} -> {ok, merge(Acc, Limit)};
+        {ReqId, {?RANGE_RESULTS, []}} ->
+            collect_range(ReqId, Limit, Timeout, Acc);
+        {ReqId, {?RANGE_RESULTS, Res}} ->
+            collect_range(ReqId, Limit, Timeout, [Res|Acc]);
+        {ReqId, Error} -> {error, Error}
+    after Timeout ->
+            {error, {timeout, Acc}}
+    end.
+
+%% @private
+-spec merge([{binary(), binary()}], range_limit()) ->
+                   [riak_object:riak_object()].
+merge(Results, Limit) ->
+    Sorted = lists:sublist(lists:keysort(1, lists:flatten(Results)), Limit),
+    [binary_to_term(V) || {_,V} <- Sorted].
 
 %% @spec set_bucket(riak_object:bucket(), [BucketProp :: {atom(),term()}]) -> ok
 %% @doc Set the given properties for Bucket.
