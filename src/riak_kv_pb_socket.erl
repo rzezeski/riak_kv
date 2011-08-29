@@ -228,7 +228,8 @@ handle_info({ReqId, {?RANGE_RESULTS, []}}, State=#state{req=#rpbrangereq{},
     {noreply, State};
 handle_info({ReqId, {?RANGE_RESULTS, Res}}, State=#state{req=#rpbrangereq{},
                                                          req_ctx=ReqId}) ->
-    {noreply, send_msg(#rpbrangeresp{results = term_to_binary(Res)}, State)};
+    Res2 = riakc_pb:pbify_range(Res),
+    {noreply, send_msg(#rpbrangeresp{results = Res2}, State)};
 handle_info({ReqId, Error},
             State=#state{sock = Socket, req=#rpbrangereq{}, req_ctx=ReqId}) ->
     NewState = send_error("~p", [Error], State),
