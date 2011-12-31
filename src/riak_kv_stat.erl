@@ -507,7 +507,8 @@ produce_stats(State, Moment) ->
        pbc_stats(Moment, State),
        app_stats(),
        mapper_stats(State),
-       memory_stats()
+       memory_stats(),
+       search_stats()
       ]).
 
 %% @spec spiral_minute(integer(), integer(), state()) -> integer()
@@ -744,6 +745,11 @@ pbc_stats(_, State=#state{pbc_connects_total=NCT,
              {pbc_active, Active}]
     end.    
 
+search_stats() ->
+    case app_helper:get_env(riak_search, enabled, false) of
+        true -> riak_search_stat:get_stats();
+        false -> []
+    end.
 
 remove_slide_private_dirs() ->
     os:cmd("rm -rf " ++ slide:private_dir()).
