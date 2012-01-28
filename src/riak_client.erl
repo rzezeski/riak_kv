@@ -752,12 +752,14 @@ collect_range(ReqId, Limit, Timeout) ->
                            error() | range_result().
 collect_range(ReqId, Limit, Timeout, Acc) ->
     receive
-        {ReqId, ?RANGE_COMPLETE} -> {ok, merge(Acc, Limit)};
+        {ReqId, ?RANGE_COMPLETE} ->
+            {ok, merge(Acc, Limit)};
         {ReqId, {?RANGE_RESULTS, []}} ->
             collect_range(ReqId, Limit, Timeout, Acc);
         {ReqId, {?RANGE_RESULTS, Res}} ->
             collect_range(ReqId, Limit, Timeout, [Res|Acc]);
-        {ReqId, Error} -> {error, Error}
+        {ReqId, Error} ->
+            {error, Error}
     after Timeout ->
             {error, {timeout, Acc}}
     end.

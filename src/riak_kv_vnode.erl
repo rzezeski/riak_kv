@@ -936,7 +936,7 @@ range(Sender, Bucket, StartKey, EndKey, Limit, Filter, Mod, ModState) ->
         case Filter of
             none -> Mod:range(ModState, Start, End, Limit);
             _ ->
-                lists:foldl(Filter, [], Mod:range(ModState, Start, End, Limit))
+                lists:filter(Filter, Mod:range(ModState, Start, End, Limit))
         end,
     riak_core_vnode:reply(Sender, {final_results, Res}).
 

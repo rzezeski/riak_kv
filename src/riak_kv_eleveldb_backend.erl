@@ -291,9 +291,9 @@ drop(#state{data_root=DataRoot}=State) ->
             {error, Reason, State}
     end.
 
-range(#state{ref=Ref}, Start0, End0, Limit) ->
-    Start = sext:encode(Start0),
-    End = sext:encode(End0),
+range(#state{ref=Ref}, {SB,SK}, {EB,EK}, Limit) ->
+    Start = to_object_key(SB,SK),
+    End = to_object_key(EB,EK),
     {ok, Itr} = eleveldb:iterator(Ref, []),
 
     case eleveldb:iterator_move(Itr, Start) of
@@ -576,26 +576,27 @@ range_test() ->
     application:set_env(eleveldb, data_root, "test/leveldb-backend"),
     L = 10,
     {ok, S} = start(0, []),
-    {A, AL} = {{<<"ppl">>, <<"andy">>}, <<"san francisco">>},
-    {J, JL} = {{<<"ppl">>, <<"joe">>}, <<"denver">>},
-    {R, RL} = {{<<"ppl">>, <<"ryan">>}, <<"baltimore">>},
-    {Ad, AdL} = {{<<"ppl">>, <<"andrew">>}, <<"upstate new york">>},
+    B = <<"ppl">>,
+    {A, AL} = {<<"andy">>, <<"san francisco">>},
+    {J, JL} = {<<"joe">>, <<"denver">>},
+    {R, RL} = {<<"ryan">>, <<"baltimore">>},
+    {Ad, AdL} = {<<"andrew">>, <<"upstate new york">>},
     Mk = fun(X) -> {<<"ppl">>, X} end,
     Vals = fun(Pairs) -> [V || {_K, V} <- Pairs] end,
 
-    ?MODULE:put(S, A, AL),
-    ?MODULE:put(S, J, JL),
-    ?MODULE:put(S, R, RL),
-    ?MODULE:put(S, Ad, AdL),
-    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Ad, R, L))),
-    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Ad, Mk(<<"z">>), L))),
+    ?MODULE:put(B, A, [], AL, S),
+    ?MODULE:put(B, J, [], JL, S),
+    ?MODULE:put(B, R, [], RL, S),
+    ?MODULE:put(B, Ad, [], AdL, S),
+    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, {B,Ad}, {B,R}, L))),
+    ?assertEqual([AdL, AL, JL, RL], Vals(range(S, {B,Ad}, Mk(<<"z">>), L))),
     ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), L))),
     ?assertEqual([AdL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 1))),
     ?assertEqual([AdL, AL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 2))),
     ?assertEqual([AdL, AL, JL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 3))),
     ?assertEqual([AdL, AL, JL, RL], Vals(range(S, Mk(<<"a">>), Mk(<<"z">>), 4))),
-    ?assertEqual([AL, JL], Vals(range(S, A, J, L))),
-    ?assertEqual([AL], Vals(range(S, A, A, L))),
+    ?assertEqual([AL, JL], Vals(range(S, {B,A}, {B,J}, L))),
+    ?assertEqual([AL], Vals(range(S, {B,A}, {B,A}, L))),
     ?assertEqual([], Vals(range(S, Mk(<<"alex">>), Mk(<<"ali">>), L))),
     ?assertEqual([], Vals(range(S, Mk(<<"tom">>), Mk(<<"zoey">>), L))).
 
