@@ -104,6 +104,7 @@ add_nl(B) ->
 
 multipart_encode(Res, P, B, Boundary, APIVersion) ->
     [[[["\r\n--",Boundary,"\r\n",
+        ?HEAD_VCLOCK, ": ", riak_kv_wm_utils:encode_vclock(O), "\r\n",
         "X-Riak-Key: ", riak_object:key(O), "\r\n",
         riak_kv_wm_utils:multipart_encode_body(P, B, Content, APIVersion)]
        || Content <- riak_object:get_contents(O)]

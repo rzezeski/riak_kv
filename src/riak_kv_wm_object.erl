@@ -711,7 +711,8 @@ produce_doc_body(RD, Ctx) ->
                                           UserMetaRD, IndexMeta);
                           error -> UserMetaRD
                       end,
-            {riak_kv_wm_utils:encode_value(Doc), encode_vclock_header(IndexRD, Ctx), Ctx};
+            {riak_kv_wm_utils:encode_value(Doc),
+             encode_vclock_header(IndexRD, Ctx), Ctx};
         multiple_choices ->
             throw({unexpected_code_path, ?MODULE, produce_doc_body, multiple_choices})
     end.
@@ -775,21 +776,11 @@ select_doc(#ctx{doc={ok, Doc}, vtag=Vtag}) ->
 %% @spec encode_vclock_header(reqdata(), context()) -> reqdata()
 %% @doc Add the X-Riak-Vclock header to the response.
 encode_vclock_header(RD, #ctx{doc={ok, Doc}}) ->
-    {Head, Val} = vclock_header(Doc),
+    {Head, Val} = riak_kv_wm_utils:vclock_header(Doc),
     wrq:set_resp_header(Head, Val, RD);
 encode_vclock_header(RD, #ctx{doc={error, {deleted, VClock}}}) ->
-    wrq:set_resp_header(?HEAD_VCLOCK, encode_vclock(VClock), RD).
-
-
-%% @spec vclock_header(riak_object()) -> {Name::string(), Value::string()}
-%% @doc Transform the Erlang representation of the document's vclock
-%%      into something suitable for an HTTP header
-vclock_header(Doc) ->
-    {?HEAD_VCLOCK,
-        encode_vclock(riak_object:vclock(Doc))}.
-
-encode_vclock(VClock) ->
-    binary_to_list(base64:encode(zlib:zip(term_to_binary(VClock)))).
+    wrq:set_resp_header(?HEAD_VCLOCK,
+                        riak_kv_wm_utils:encode_vclock(VClock), RD).
 
 %% @spec decode_vclock_header(reqdata()) -> vclock()
 %% @doc Translate the X-Riak-Vclock header value from the request into
