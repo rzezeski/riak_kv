@@ -461,6 +461,7 @@ handle_coverage(?KV_INDEX_REQ{bucket=Bucket,
 
 handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
                               limit=Limit,
+                              keys_only=KeysOnly,
                               start_key=StartKey,
                               end_key=EndKey},
                 FilterVNodes,
@@ -468,7 +469,7 @@ handle_coverage(?KV_RANGE_REQ{bucket=Bucket,
                 State=#state{idx=Idx, mod=Mod, modstate=ModState}) ->
     FilterVNode = proplists:get_value(Idx, FilterVNodes),
     Filter = riak_kv_coverage_filter:build_filter(Bucket, none, FilterVNode),
-    range(Sender, Bucket, StartKey, EndKey, Limit, Filter, Mod, ModState),
+    range(Sender, Bucket, StartKey, EndKey, Limit, KeysOnly, Filter, Mod, ModState),
     {noreply, State}.
 
 %% Convenience for handling both v3 and v4 coverage-based listkeys
@@ -929,12 +930,12 @@ finish_fun(BufferMod, Sender) ->
             finish_fold(BufferMod, Buffer, Sender)
     end.
 
-range(Sender, Bucket, StartKey, EndKey, Limit, Filter, Mod, ModState) ->
+range(Sender, Bucket, StartKey, EndKey, Limit, KeysOnly, Filter, Mod, ModState) ->
     Start = {Bucket, StartKey},
     End = {Bucket, EndKey},
     Res =
         case Filter of
-            none -> Mod:range(ModState, Start, End, Limit);
+            none -> Mod:range(ModState, Start, End, KeysOnly, Limit);
             _ ->
                 lists:filter(Filter, Mod:range(ModState, Start, End, Limit))
         end,

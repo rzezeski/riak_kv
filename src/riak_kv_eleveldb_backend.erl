@@ -33,6 +33,7 @@
          put/5,
          delete/4,
          range/4,
+         range/5,
          drop/1,
          fold_buckets/4,
          fold_keys/4,
@@ -291,7 +292,9 @@ drop(#state{data_root=DataRoot}=State) ->
             {error, Reason, State}
     end.
 
-range(#state{ref=Ref}, {SB,SK}, {EB,EK}, Limit) ->
+range(S, Start, End, Limit) -> range(S, Start, End, false, Limit).
+
+range(#state{ref=Ref}, {SB,SK}, {EB,EK}, KeysOnly, Limit) ->
     Start = to_object_key(SB,SK),
     End = to_object_key(EB,EK),
     {ok, Itr} = eleveldb:iterator(Ref, []),
@@ -300,7 +303,12 @@ range(#state{ref=Ref}, {SB,SK}, {EB,EK}, Limit) ->
         %% Start is after last key
         {error, invalid_iterator} -> range_end(Itr, []);
         {ok, Key, Val} ->
-            if Key =< End -> range_itr(Itr, End, Limit - 1, [{Key, Val}]);
+            if Key =< End ->
+                    Key2 = from_object_key(Key),
+                    if KeysOnly -> Entry = Key2;
+                       true -> Entry = {Key2, Val}
+                    end,
+                    range_itr(Itr, KeysOnly, {End, Limit - 1, [Entry]});
                true       -> range_end(Itr, [])
             end
     end.
@@ -509,11 +517,16 @@ from_index_key(LKey) ->
             undefined
     end.
 
-range_itr(Itr, _End, 0, Acc) -> range_end(Itr, Acc);
+range_itr(Itr, _, {_, 0, Acc}) -> range_end(Itr, Acc);
 
-range_itr(Itr, End, N, Acc) ->
+range_itr(Itr, KeysOnly, {End, N, Acc}) ->
     case eleveldb:iterator_move(Itr, next) of
-        {ok, K, V} when K =< End  -> range_itr(Itr, End, N-1, [{K,V}|Acc]);
+        {ok, K, V} when K =< End  ->
+            K2 = from_object_key(K),
+            if KeysOnly -> Entry = K2;
+               true -> Entry = {K2, V}
+            end,
+            range_itr(Itr, KeysOnly, {End, N-1, [Entry|Acc]});
         {error, invalid_iterator} -> range_end(Itr, Acc);
         {ok, _K, _V}              -> range_end(Itr, Acc)
     end.
@@ -598,6 +611,8 @@ range_test() ->
     ?assertEqual([AL, JL], Vals(range(S, {B,A}, {B,J}, L))),
     ?assertEqual([AL], Vals(range(S, {B,A}, {B,A}, L))),
     ?assertEqual([], Vals(range(S, Mk(<<"alex">>), Mk(<<"ali">>), L))),
-    ?assertEqual([], Vals(range(S, Mk(<<"tom">>), Mk(<<"zoey">>), L))).
+    ?assertEqual([], Vals(range(S, Mk(<<"tom">>), Mk(<<"zoey">>), L))),
+
+    ?assertEqual([{B,Ad}, {B,A}, {B,J}, {B,R}], range(S, {B,Ad}, {B,R}, true, L)).
 
 -endif.

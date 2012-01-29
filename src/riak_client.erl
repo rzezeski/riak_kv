@@ -718,6 +718,8 @@ stream_get_index(Bucket, Query, Timeout) ->
 %%   `stream' - Whether or not to stream the results.
 %%
 %%   `client' - Pid to send results to.
+%%
+%%   `keys_only' - Return only the keys.
 -spec range(riak_object:bucket(), riak_object:key(), riak_object:key()) ->
                    range_result().
 range(Bucket, StartKey, EndKey) ->
@@ -730,34 +732,35 @@ range(Bucket, StartKey, EndKey, Opts) ->
     Stream = proplists:get_bool(stream, Opts),
     Timeout = proplists:get_value(timeout, Opts, ?DEFAULT_TIMEOUT),
     Client = proplists:get_value(client, Opts, self()),
+    KeysOnly = proplists:get_bool(keys_only, Opts),
     ReqId = mk_reqid(),
     Id = {raw, ReqId, Client},
 
     riak_kv_range_fsm_sup:start_range_fsm(Node,
                                           [Id,
                                            [Bucket, StartKey, EndKey,
-                                            Limit, Timeout]]),
+                                            Limit, KeysOnly, Timeout]]),
     if Stream -> {ok, ReqId};
-       true -> collect_range(ReqId, Limit, Timeout)
+       true -> collect_range(ReqId, KeysOnly, Limit, Timeout)
     end.
 
 %% @private
--spec collect_range(reqid(), range_limit(), timeout()) ->
+-spec collect_range(reqid(), boolean(), range_limit(), timeout()) ->
                            error() | range_result().
-collect_range(ReqId, Limit, Timeout) ->
-    collect_range(ReqId, Limit, Timeout, []).
+collect_range(ReqId, KeysOnly, Limit, Timeout) ->
+    collect_range(ReqId, KeysOnly, Limit, Timeout, []).
 
 %% @private
--spec collect_range(reqid(), range_limit(), timeout(), list()) ->
+-spec collect_range(reqid(), boolean(), range_limit(), timeout(), list()) ->
                            error() | range_result().
-collect_range(ReqId, Limit, Timeout, Acc) ->
+collect_range(ReqId, KeysOnly, Limit, Timeout, Acc) ->
     receive
         {ReqId, ?RANGE_COMPLETE} ->
-            {ok, merge(Acc, Limit)};
+            {ok, merge(Acc, KeysOnly, Limit)};
         {ReqId, {?RANGE_RESULTS, []}} ->
-            collect_range(ReqId, Limit, Timeout, Acc);
+            collect_range(ReqId, KeysOnly, Limit, Timeout, Acc);
         {ReqId, {?RANGE_RESULTS, Res}} ->
-            collect_range(ReqId, Limit, Timeout, [Res|Acc]);
+            collect_range(ReqId, KeysOnly, Limit, Timeout, [Res|Acc]);
         {ReqId, Error} ->
             {error, Error}
     after Timeout ->
@@ -765,11 +768,16 @@ collect_range(ReqId, Limit, Timeout, Acc) ->
     end.
 
 %% @private
--spec merge([{binary(), binary()}], range_limit()) ->
-                   [riak_object:riak_object()].
-merge(Results, Limit) ->
-    Sorted = lists:sublist(lists:keysort(1, lists:flatten(Results)), Limit),
-    [binary_to_term(V) || {_,V} <- Sorted].
+-spec merge([{binary(), binary()}], boolean(), range_limit()) ->
+                   [riak_object:riak_object()] | [riak_object:key()].
+merge(Results, KeysOnly, Limit) ->
+    if KeysOnly -> SortIdx = 2;
+       true -> SortIdx = 1
+    end,
+    Results2 = lists:sublist(lists:keysort(SortIdx, lists:flatten(Results)), Limit),
+    if KeysOnly -> [K || {_,K} <- Results2];
+       true -> [binary_to_term(V) || {_,V} <- Results2]
+    end.
 
 %% @spec set_bucket(riak_object:bucket(), [BucketProp :: {atom(),term()}]) -> ok
 %% @doc Set the given properties for Bucket.

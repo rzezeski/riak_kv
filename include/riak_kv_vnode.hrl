@@ -61,6 +61,7 @@
 -record(riak_kv_range_req_v1, {
           bucket        :: riak_object:bucket(),
           limit         :: 1..100000,
+          keys_only     :: boolean(),
           start_key     :: riak_object:bkey(),
           end_key       :: riak_object:bkey()
          }).

@@ -226,10 +226,16 @@ handle_info({ReqId, ?RANGE_COMPLETE},
 handle_info({ReqId, {?RANGE_RESULTS, []}}, State=#state{req=#rpbrangereq{},
                                                         req_ctx=ReqId}) ->
     {noreply, State};
-handle_info({ReqId, {?RANGE_RESULTS, Res}}, State=#state{req=#rpbrangereq{},
-                                                         req_ctx=ReqId}) ->
-    Res2 = riakc_pb:pbify_range(Res),
-    {noreply, send_msg(#rpbrangeresp{results = Res2}, State)};
+handle_info({ReqId, {?RANGE_RESULTS, Res}},
+            State=#state{req=#rpbrangereq{keys_only=KeysOnly},
+                         req_ctx=ReqId}) ->
+    if KeysOnly ->
+            Resp = #rpbrangekeysonlyresp{results = riakc_pb:pbify_range(KeysOnly, Res)};
+       true ->
+            Res2 = riakc_pb:pbify_range(KeysOnly, Res),
+            Resp = #rpbrangeresp{results = Res2}
+    end,
+    {noreply, send_msg(Resp, State)};
 handle_info({ReqId, Error},
             State=#state{sock = Socket, req=#rpbrangereq{}, req_ctx=ReqId}) ->
     NewState = send_error("~p", [Error], State),
@@ -493,9 +499,12 @@ process_message(#rpbmapredreq{request=MrReq, content_type=ContentType}=Req,
             end
     end;
 
-process_message(#rpbrangereq{bucket=B, limit=L, start_key=S, end_key=E}=Req,
+process_message(#rpbrangereq{bucket=B, limit=L, start_key=S, end_key=E, keys_only=KeysOnly}=Req,
                 #state{client=C} = State) ->
-    {ok, ReqId} = C:range(B, S, E, [{limit, L}, stream]),
+    if KeysOnly -> Opts = [keys_only];
+       true -> Opts = []
+    end,
+    {ok, ReqId} = C:range(B, S, E, [{limit, L}, stream|Opts]),
     {pause, State#state{req = Req, req_ctx = ReqId}}.
 
 

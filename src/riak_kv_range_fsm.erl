@@ -10,11 +10,12 @@
 
 -record(ctx, {from}).
 
-init(From, [Bucket, StartKey, EndKey, Limit, Timeout]) ->
+init(From, [Bucket, StartKey, EndKey, Limit, KeysOnly, Timeout]) ->
     BProps = riak_core_bucket:get_bucket(Bucket),
     N = proplists:get_value(n_val, BProps),
     Req = ?KV_RANGE_REQ{bucket=Bucket,
                         limit=Limit,
+                        keys_only=KeysOnly,
                         start_key=StartKey,
                         end_key=EndKey},
     {Req, all, N, 1, riak_kv, riak_kv_vnode_master, Timeout, #ctx{from=From}}.
