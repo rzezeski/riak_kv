@@ -1,4 +1,5 @@
 -module(riak_kv_wm_range).
+-compile({parse_transform, do}).
 -export([
          init/1,
          service_available/2,
@@ -6,9 +7,7 @@
          malformed_request/2,
          content_types_provided/2,
          %% Content
-         range/2,
-         %% HOFs
-         add_nl/1
+         range/2
         ]).
 -include_lib("webmachine/include/webmachine.hrl").
 -include("riak_kv_wm_raw.hrl").
@@ -40,9 +39,8 @@ service_available(RD, Ctx=#ctx{riak=RiakProps}) ->
                bucket=get_path_param(bucket, RD),
                start=get_path_param(start, RD),
                'end'=get_path_param('end', RD),
-               %% TODO probably put coversion in malformed_request
-               limit=list_to_integer(wrq:get_qs_value(?Q_LIMIT, "10", RD)),
-               keys_only=list_to_existing_atom(wrq:get_qs_value(?Q_KEYS_ONLY, "false", RD))
+               limit=wrq:get_qs_value(?Q_LIMIT, "10", RD),
+               keys_only=wrq:get_qs_value(?Q_KEYS_ONLY, "false", RD)
               }};
         Error ->
             {false,
@@ -56,8 +54,15 @@ allowed_methods(RD, Ctx) ->
     {['GET'], RD, Ctx}.
 
 malformed_request(RD, Ctx) ->
-    %% TODO always good for now
-    {false, RD, Ctx}.
+    %% TODO This would be cleaner with StateT and bring in entire
+    %% response tuple.
+    R=do([error_m ||
+             Ctx2 <- malformed_keys_only(Ctx),
+             malformed_limit(Ctx2)]),
+    case R of
+        {ok, Ctx2} -> {false, RD, Ctx2};
+        {error, Error} -> {true, add_error_body(Error, RD), Ctx}
+    end.
 
 content_types_provided(RD, Ctx=#ctx{keys_only=KO}) ->
     if KO -> CT = "text/plain";
@@ -85,7 +90,7 @@ range(RD, Ctx=#ctx{keys_only=true}) ->
     #ctx{bucket=B, client=C, 'end'=E, limit=L, start=S}=Ctx,
     lager:info("range ~p ~p ~p ~p", [B, S, E, L]),
     {ok, Res} = C:range(B, S, E, [keys_only, {limit,L}]),
-    Res2 = lists:map(fun ?MODULE:add_nl/1, Res),
+    Res2 = [<<R/binary,"\n">> || R <- Res],
     RD2 = wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD),
     {Res2, RD2, Ctx}.
 
@@ -93,14 +98,28 @@ range(RD, Ctx=#ctx{keys_only=true}) ->
 %% Private
 %% -------------------------------------------------------------------
 
+add_error_body(Error, RD) ->
+    wrq:append_to_resp_body(Error,
+                            wrq:set_resp_header(?HEAD_CTYPE, "text/plain", RD)).
+
 get_path_param(Name, RD) ->
     case wrq:path_info(Name, RD) of
         undefined -> undefined;
         Val -> list_to_binary(riak_kv_wm_utils:maybe_decode_uri(RD, Val))
     end.
 
-add_nl(B) ->
-    <<B/binary,"\n">>.
+malformed_keys_only(Ctx=#ctx{keys_only="true"}) ->
+    {ok, Ctx#ctx{keys_only=true}};
+malformed_keys_only(Ctx=#ctx{keys_only="false"}) ->
+    {ok, Ctx#ctx{keys_only=false}};
+malformed_keys_only(_Ctx=#ctx{keys_only=_}) ->
+    {error, "the value of keys_only must be true or false"}.
+
+malformed_limit(Ctx=#ctx{limit=L}) ->
+    L2 = list_to_integer(L),
+    if L2 =< 0 -> {error, "the value of limit must be a positive integer\n"};
+       true -> {ok, Ctx#ctx{limit=L2}}
+    end.
 
 multipart_encode(Res, P, B, Boundary, APIVersion) ->
     [[[["\r\n--",Boundary,"\r\n",
@@ -110,3 +129,4 @@ multipart_encode(Res, P, B, Boundary, APIVersion) ->
        || Content <- riak_object:get_contents(O)]
       || O <- Res],
      "\r\n--",Boundary,"--\r\n"].
+
