@@ -77,6 +77,7 @@
                 mod :: module(),
                 modstate :: term(),
                 mrjobs :: term(),
+                obj_modified_hooks :: [{module(),atom()}],
                 vnodeid :: undefined | binary(),
                 delete_mode :: keep | immediate | pos_integer(),
                 bucket_buf_size :: pos_integer(),
@@ -638,7 +639,6 @@ do_put(Sender, {Bucket,_Key}=BKey, RObj, ReqID, StartTime, Options, State) ->
     riak_core_vnode:reply(Sender, Reply),
 
     update_index_write_stats(UpdPutArgs#putargs.is_index, UpdPutArgs#putargs.index_specs),
-    riak_kv_stat:update(vnode_put),
     UpdState.
 
 do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
@@ -754,13 +754,14 @@ perform_put({false, _Obj},
 perform_put({true, Obj},
             #state{idx=Idx,
                    mod=Mod,
-                   modstate=ModState}=State,
+                   modstate=ModState,
+                   obj_modified_hooks=Hooks}=State,
             #putargs{returnbody=RB,
                      bkey={Bucket, Key},
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
     Val = term_to_binary(Obj),
-    case Mod:put(Bucket, Key, IndexSpecs, Val, ModState) of
+    case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState) of
         {ok, UpdModState} ->
             case RB of
                 true ->
@@ -1053,7 +1054,8 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj,
                _StateData=#state{mod=Mod,
-                                 modstate=ModState}) ->
+                                 modstate=ModState,
+                                 obj_modified_hooks=Hooks}) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1065,11 +1067,11 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     IndexSpecs = []
             end,
             Val = term_to_binary(DiffObj),
-            Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+            Res =
+                backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState),
             case Res of
                 {ok, _UpdModState} ->
-                    update_index_write_stats(IndexBackend, IndexSpecs),
-                    riak_kv_stat:update(vnode_put);
+                    update_index_write_stats(IndexBackend, IndexSpecs);
                 _ -> nop
             end,
             Res;
@@ -1090,11 +1092,11 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                             IndexSpecs = []
                     end,
                     Val = term_to_binary(AMObj),
-                    Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+                    Res = backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
+                                      ModState),
                     case Res of
                         {ok, _UpdModState} ->
-                            update_index_write_stats(IndexBackend, IndexSpecs),
-                            riak_kv_stat:update(vnode_put);
+                            update_index_write_stats(IndexBackend, IndexSpecs);
                         _ ->
                             nop
                     end,
@@ -1240,6 +1242,20 @@ object_info({Bucket, _Key}=BKey) ->
     Hash = riak_core_util:chash_key(BKey),
     {Bucket, Hash}.
 
+%% @private
+backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState) ->
+    Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
+    case Res of
+        {ok, _} ->
+            [run_hook(H, Val) || H <- Hooks],
+            riak_kv_stat:update(vnode_put);
+        _ -> ok
+    end,
+    Res.
+
+%% @private
+run_hook({M, F}, Val) ->
+    M:F(Val).
 
 -ifdef(TEST).
 
