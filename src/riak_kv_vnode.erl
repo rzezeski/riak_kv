@@ -769,7 +769,7 @@ perform_put({true, Obj},
                      index_specs=IndexSpecs}) ->
     Val = term_to_binary(Obj),
     Hooks = get_obj_modified_hooks(BProps),
-    case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState) of
+    case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, State, ModState) of
         {ok, UpdModState} ->
             case RB of
                 true ->
@@ -1061,8 +1061,7 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% @private
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj, BProps,
-               _StateData=#state{mod=Mod,
-                                 modstate=ModState}) ->
+               State=#state{mod=Mod, modstate=ModState}) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1075,8 +1074,8 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
             end,
             Val = term_to_binary(DiffObj),
             Hooks = get_obj_modified_hooks(BProps),
-            Res =
-                backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState),
+            Res = backend_put(Mod, Bucket, Key, IndexSpecs,
+                              Val, Hooks, State, ModState),
             case Res of
                 {ok, _UpdModState} ->
                     update_index_write_stats(IndexBackend, IndexSpecs);
@@ -1101,8 +1100,8 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                     end,
                     Val = term_to_binary(AMObj),
                     Hooks = get_obj_modified_hooks(BProps),
-                    Res = backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
-                                      ModState),
+                    Res = backend_put(Mod, Bucket, Key, IndexSpecs,
+                                      Val, Hooks, State, ModState),
                     case Res of
                         {ok, _UpdModState} ->
                             update_index_write_stats(IndexBackend, IndexSpecs);
@@ -1252,11 +1251,11 @@ object_info({Bucket, _Key}=BKey) ->
     {Bucket, Hash}.
 
 %% @private
-backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState) ->
+backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, State, ModState) ->
     Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
     case Res of
         {ok, _} ->
-            [run_hook(H, Val) || H <- Hooks],
+            [run_hook(H, Val, State) || H <- Hooks],
             riak_kv_stat:update(vnode_put);
         _ -> ok
     end,
@@ -1267,8 +1266,8 @@ get_obj_modified_hooks(BProps) ->
     proplists:get_value(obj_modified_hooks, BProps, []).
 
 %% @private
-run_hook({M, F}, Val) ->
-    M:F(Val).
+run_hook({M, F}, Val, State) ->
+    M:F(Val, State).
 
 -ifdef(TEST).
 
