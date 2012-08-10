@@ -107,9 +107,7 @@
 add_obj_modified_hook(Bucket, Mod, Fun) ->
     BProps = riak_core_bucket:get_bucket(Bucket),
     Existing = get_obj_modified_hooks(BProps),
-    ModT = {<<"mod">>, Mod},
-    PostT = {<<"fun">>, Fun},
-    New = {struct, [ModT, PostT]},
+    New = {Mod, Fun},
     Hooks = lists:usort([New|Existing]),
     ok = riak_core_bucket:set_bucket(Bucket, [{obj_modified_hooks, Hooks}]).
 
