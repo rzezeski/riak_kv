@@ -27,7 +27,8 @@
 
 %% API
 -export([test_vnode/1, put/7]).
--export([start_vnode/1,
+-export([add_obj_modified_hook/3,
+         start_vnode/1,
          get/3,
          get_state_partition/1,
          mget/3,
@@ -103,6 +104,15 @@
                  }).
 
 %% API
+add_obj_modified_hook(Bucket, Mod, Fun) ->
+    BProps = riak_core_bucket:get_bucket(Bucket),
+    Existing = get_obj_modified_hooks(BProps),
+    ModT = {<<"mod">>, Mod},
+    PostT = {<<"fun">>, Fun},
+    New = {struct, [ModT, PostT]},
+    Hooks = lists:usort([New|Existing]),
+    ok = riak_core_bucket:set_bucket(Bucket, [{obj_modified_hooks, Hooks}]).
+
 start_vnode(I) ->
     riak_core_vnode_master:get_vnode_pid(I, riak_kv_vnode).
 
