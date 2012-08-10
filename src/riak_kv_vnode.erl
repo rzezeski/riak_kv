@@ -77,7 +77,6 @@
                 mod :: module(),
                 modstate :: term(),
                 mrjobs :: term(),
-                obj_modified_hooks :: [{module(),atom()}],
                 vnodeid :: undefined | binary(),
                 delete_mode :: keep | immediate | pos_integer(),
                 bucket_buf_size :: pos_integer(),
@@ -548,8 +547,12 @@ handoff_finished(_TargetNode, State) ->
 
 handle_handoff_data(BinObj, State) ->
     PBObj = riak_core_pb:decode_riakobject_pb(zlib:unzip(BinObj)),
-    BKey = {PBObj#riakobject_pb.bucket,PBObj#riakobject_pb.key},
-    case do_diffobj_put(BKey, binary_to_term(PBObj#riakobject_pb.val), State) of
+    Bucket = PBObj#riakobject_pb.bucket,
+    BKey = {Bucket, PBObj#riakobject_pb.key},
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    BProps = riak_core_bucket:get_bucket(Bucket, Ring),
+
+    case do_diffobj_put(BKey, binary_to_term(PBObj#riakobject_pb.val), BProps, State) of
         {ok, UpdModState} ->
             {reply, ok, State#state{modstate=UpdModState}};
         {error, Reason, UpdModState} ->
@@ -754,13 +757,14 @@ perform_put({false, _Obj},
 perform_put({true, Obj},
             #state{idx=Idx,
                    mod=Mod,
-                   modstate=ModState,
-                   obj_modified_hooks=Hooks}=State,
+                   modstate=ModState}=State,
             #putargs{returnbody=RB,
                      bkey={Bucket, Key},
+                     bprops=BProps,
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
     Val = term_to_binary(Obj),
+    Hooks = get_obj_modified_hooks(BProps),
     case backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState) of
         {ok, UpdModState} ->
             case RB of
@@ -1052,10 +1056,9 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 
 %% @private
 %% upon receipt of a handoff datum, there is no client FSM
-do_diffobj_put({Bucket, Key}, DiffObj,
+do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                _StateData=#state{mod=Mod,
-                                 modstate=ModState,
-                                 obj_modified_hooks=Hooks}) ->
+                                 modstate=ModState}) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1067,6 +1070,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                     IndexSpecs = []
             end,
             Val = term_to_binary(DiffObj),
+            Hooks = get_obj_modified_hooks(BProps),
             Res =
                 backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState),
             case Res of
@@ -1092,6 +1096,7 @@ do_diffobj_put({Bucket, Key}, DiffObj,
                             IndexSpecs = []
                     end,
                     Val = term_to_binary(AMObj),
+                    Hooks = get_obj_modified_hooks(BProps),
                     Res = backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks,
                                       ModState),
                     case Res of
@@ -1252,6 +1257,10 @@ backend_put(Mod, Bucket, Key, IndexSpecs, Val, Hooks, ModState) ->
         _ -> ok
     end,
     Res.
+
+%% @private
+get_obj_modified_hooks(BProps) ->
+    proplists:get_value(obj_modified_hooks, BProps, []).
 
 %% @private
 run_hook({M, F}, Val) ->
