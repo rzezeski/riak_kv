@@ -776,7 +776,7 @@ perform_put({true, Obj},
                      reqid=ReqID,
                      index_specs=IndexSpecs}) ->
     Hooks = get_obj_modified_hooks(BProps),
-    case backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks, State, ModState) of
+    case backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks, State, ModState, put) of
         {ok, UpdModState} ->
             case RB of
                 true ->
@@ -1081,7 +1081,7 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
             end,
             Hooks = get_obj_modified_hooks(BProps),
             Res = backend_put(Mod, Bucket, Key, IndexSpecs,
-                              DiffObj, Hooks, State, ModState),
+                              DiffObj, Hooks, State, ModState, handoff),
             case Res of
                 {ok, _UpdModState} ->
                     update_index_write_stats(IndexBackend, IndexSpecs);
@@ -1106,7 +1106,7 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                     end,
                     Hooks = get_obj_modified_hooks(BProps),
                     Res = backend_put(Mod, Bucket, Key, IndexSpecs,
-                                      AMObj, Hooks, State, ModState),
+                                      AMObj, Hooks, State, ModState, handoff),
                     case Res of
                         {ok, _UpdModState} ->
                             update_index_write_stats(IndexBackend, IndexSpecs);
@@ -1256,12 +1256,13 @@ object_info({Bucket, _Key}=BKey) ->
     {Bucket, Hash}.
 
 %% @private
-backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks, State, ModState) ->
+backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks,
+            State, ModState, Reason) ->
     Val = term_to_binary(Obj),
     Res = Mod:put(Bucket, Key, IndexSpecs, Val, ModState),
     case Res of
         {ok, _} ->
-            [run_hook(H, Obj, State) || H <- Hooks],
+            [run_hook(H, Obj, Reason, State) || H <- Hooks],
             riak_kv_stat:update(vnode_put);
         _ -> ok
     end,
@@ -1272,8 +1273,8 @@ get_obj_modified_hooks(BProps) ->
     proplists:get_value(obj_modified_hooks, BProps, []).
 
 %% @private
-run_hook({M, F}, Val, State) ->
-    M:F(Val, State).
+run_hook({M, F}, Val, Reason, State) ->
+    M:F(Val, Reason, State).
 
 -ifdef(TEST).
 
