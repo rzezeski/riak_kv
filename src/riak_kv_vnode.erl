@@ -669,6 +669,9 @@ do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
     {Bucket, Key} = BKey,
     case Mod:delete(Bucket, Key, IndexSpecs, ModState) of
         {ok, UpdModState} ->
+            BProps = riak_core_bucket:get_bucket(Bucket),
+            Hooks = get_obj_modified_hooks(BProps),
+            [run_hook(H, RObj, delete, State) || H <- Hooks],
             update_index_delete_stats(IndexSpecs),
             State#state{modstate = UpdModState};
         {error, _Reason, UpdModState} ->
