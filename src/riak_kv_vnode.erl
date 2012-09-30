@@ -85,7 +85,8 @@
                 index_buf_size :: pos_integer(),
                 key_buf_size :: pos_integer(),
                 async_folding :: boolean(),
-                in_handoff = false :: boolean() }).
+                in_handoff = false :: boolean(),
+                hashtrees :: pid() }).
 
 -type index_op() :: add | remove.
 -type index_value() :: integer() | binary().
@@ -102,6 +103,118 @@
                   prunetime :: undefined| non_neg_integer(),
                   is_index=false :: boolean() %% set if the b/end supports indexes
                  }).
+
+-compile(export_all).
+
+do_exchange(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    LocalVN = {Index, node()},
+    RP = responsible_preflists(Index),
+    Sibs = preflist_siblings(Index),
+    [begin
+         Owner = riak_core_ring:index_owner(Ring, RemoteIdx),
+         RemoteVN = {RemoteIdx, Owner},
+         [begin
+              {ok, Fsm} = exchange_fsm:start_link(LocalVN, RemoteVN, IN),
+              exchange_fsm:sync_start_exchange(Fsm),
+              lager:info("==="),
+              ok
+          end || IN <- RP]
+     end || RemoteIdx <- Sibs,
+            RemoteIdx /= Index],
+    ok.
+
+determine_max_n(Ring) ->
+    Buckets = riak_core_ring:get_buckets(Ring),
+    BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
+    Default = app_helper:get_env(riak_core, default_bucket_props),
+    MaxN0 = proplists:get_value(n_val, Default),
+    MaxN = lists:foldl(fun(Props, MaxN) ->
+                               N = proplists:get_value(n_val, Props),
+                               erlang:max(N, MaxN)
+                       end, MaxN0, BucketProps),
+    MaxN.
+
+determine_all_n(Ring) ->
+    Buckets = riak_core_ring:get_buckets(Ring),
+    BucketProps = [riak_core_bucket:get_bucket(Bucket, Ring) || Bucket <- Buckets],
+    Default = app_helper:get_env(riak_core, default_bucket_props),
+    DefaultN = proplists:get_value(n_val, Default),
+    AllN = lists:foldl(fun(Props, AllN) ->
+                               N = proplists:get_value(n_val, Props),
+                               ordsets:add_element(N, AllN)
+                       end, [DefaultN], BucketProps),
+    AllN.
+
+responsible_indices(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    responsible_indices(Index, Ring).
+
+responsible_indices(Index, Ring) ->
+    MaxN = determine_max_n(Ring),
+    responsible_indices(Index, MaxN, Ring).
+
+responsible_indices(Index, N, Ring) ->
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    Indices = [Idx || {Idx, _} <- PL],
+    RevIndices = lists:reverse(Indices),
+    {Pred, _} = lists:split(N, RevIndices),
+    lists:reverse(Pred).
+
+responsible_preflists(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    responsible_preflists(Index, Ring).
+
+responsible_preflists(Index, Ring) ->
+    AllN = determine_all_n(Ring),
+    responsible_preflists(Index, AllN, Ring).
+
+responsible_preflists(Index, AllN, Ring) ->
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    Indices = [Idx || {Idx, _} <- PL],
+    RevIndices = lists:reverse(Indices),
+    lists:flatmap(fun(N) ->
+                          responsible_preflists_n(RevIndices, N)
+                  end, AllN).
+
+responsible_preflists_n(RevIndices, N) ->
+    {Pred, _} = lists:split(N, RevIndices),
+    [{Idx, N} || Idx <- lists:reverse(Pred)].
+
+preflist_siblings(Index) ->
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    preflist_siblings(Index, Ring).
+
+preflist_siblings(Index, Ring) ->
+    MaxN = determine_max_n(Ring),
+    preflist_siblings(Index, MaxN, Ring).
+
+preflist_siblings(Index, N, Ring) ->
+    IndexBin = <<Index:160/integer>>,
+    PL = riak_core_ring:preflist(IndexBin, Ring),
+    Indices = [Idx || {Idx, _} <- PL],
+    RevIndices = lists:reverse(Indices),
+    {Succ, _} = lists:split(N-1, Indices),
+    {Pred, _} = lists:split(N, RevIndices),
+    lists:reverse(Pred) ++ Succ.
+
+maybe_rebuild_hashtrees(State=#state{idx=Index}) ->
+    %% TODO: Don't build if not primary
+    {ok, Ring} = riak_core_ring_manager:get_my_ring(),
+    case riak_core_ring:index_owner(Ring, Index) == node() of
+        false ->
+            State;
+        true ->
+            RP = responsible_preflists(Index),
+            %% Indices = [Index],
+            {ok, Trees} = index_hashtree:start_link(Index, RP),
+            %% [index_hashtree:new_tree({Idx,N}, Trees) || {Idx,N} <- RP],
+            %% Hashtrees now build themselves
+            %% index_hashtree:build(Trees),
+            State#state{hashtrees=Trees}
+    end.
 
 %% API
 add_obj_modified_hook(Bucket, Mod, Fun) ->
@@ -240,6 +353,11 @@ repair_filter(Target) ->
                                 default_object_nval(),
                                 fun object_info/1).
 
+hashtree_pid(Partition) ->
+    riak_core_vnode_master:sync_command({Partition, node()},
+                                        hashtree_pid,
+                                        riak_kv_vnode_master,
+                                        infinity).
 
 %% VNode callbacks
 
@@ -269,7 +387,8 @@ init([Index]) ->
                 true ->
                     %% Create worker pool initialization tuple
                     FoldWorkerPool = {pool, riak_kv_worker, 10, []},
-                    {ok, State, [FoldWorkerPool]};
+                    State2 = maybe_rebuild_hashtrees(State),
+                    {ok, State2, [FoldWorkerPool]};
                 false ->
                     {ok, State}
             end;
@@ -375,6 +494,19 @@ handle_command(?FOLD_REQ{foldfun=FoldFun, acc0=Acc0}, Sender, State) ->
                           FoldFun({Bucket, Key}, Value, Acc)
                   end,
     do_fold(FoldWrapper, Acc0, Sender, State);
+
+%% entropy exchange commands
+handle_command(hashtree_pid, _, State=#state{hashtrees=HT}) ->
+    {reply, {ok, HT}, State};
+handle_command({start_exchange_remote, FsmPid, IndexN}, Sender, State) ->
+    HT = State#state.hashtrees,
+    case index_hashtree:start_exchange_remote(FsmPid, IndexN, HT) of
+        ok ->
+            riak_core_vnode:reply(Sender, {remote_exchange, HT});
+        Error ->
+            riak_core_vnode:reply(Sender, {remote_exchange, Error})
+    end,
+    {noreply, State};
 
 %% Commands originating from inside this vnode
 handle_command({backend_callback, Ref, Msg}, _Sender,
@@ -672,6 +804,7 @@ do_backend_delete(BKey, RObj, State = #state{mod = Mod, modstate = ModState}) ->
             BProps = riak_core_bucket:get_bucket(Bucket),
             Hooks = get_obj_modified_hooks(BProps),
             [run_hook(H, RObj, delete, State) || H <- Hooks],
+            index_hashtree:delete(BKey, State#state.hashtrees),
             update_index_delete_stats(IndexSpecs),
             State#state{modstate = UpdModState};
         {error, _Reason, UpdModState} ->
@@ -781,6 +914,8 @@ perform_put({true, Obj},
     Hooks = get_obj_modified_hooks(BProps),
     case backend_put(Mod, Bucket, Key, IndexSpecs, Obj, Hooks, State, ModState, put) of
         {ok, UpdModState} ->
+            Val = term_to_binary(Obj),
+            update_hashtree(Bucket, Key, Val, State),
             case RB of
                 true ->
                     Reply = {dw, Idx, Obj, ReqID};
@@ -1071,7 +1206,7 @@ do_get_vclock({Bucket, Key}, Mod, ModState) ->
 %% @private
 %% upon receipt of a handoff datum, there is no client FSM
 do_diffobj_put({Bucket, Key}, DiffObj, BProps,
-               State=#state{mod=Mod, modstate=ModState}) ->
+               StateData=#state{mod=Mod, modstate=ModState}) ->
     {ok, Capabilities} = Mod:capabilities(Bucket, ModState),
     IndexBackend = lists:member(indexes, Capabilities),
     case Mod:get(Bucket, Key, ModState) of
@@ -1084,10 +1219,13 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
             end,
             Hooks = get_obj_modified_hooks(BProps),
             Res = backend_put(Mod, Bucket, Key, IndexSpecs,
-                              DiffObj, Hooks, State, ModState, handoff),
+                              DiffObj, Hooks, StateData, ModState, handoff),
             case Res of
                 {ok, _UpdModState} ->
-                    update_index_write_stats(IndexBackend, IndexSpecs);
+                    Val = term_to_binary(DiffObj),
+                    update_hashtree(Bucket, Key, Val, StateData),
+                    update_index_write_stats(IndexBackend, IndexSpecs),
+                    riak_kv_stat:update(vnode_put);
                 _ -> nop
             end,
             Res;
@@ -1109,16 +1247,22 @@ do_diffobj_put({Bucket, Key}, DiffObj, BProps,
                     end,
                     Hooks = get_obj_modified_hooks(BProps),
                     Res = backend_put(Mod, Bucket, Key, IndexSpecs,
-                                      AMObj, Hooks, State, ModState, handoff),
+                                      AMObj, Hooks, StateData, ModState, handoff),
                     case Res of
                         {ok, _UpdModState} ->
-                            update_index_write_stats(IndexBackend, IndexSpecs);
+                            Val = term_to_binary(AMObj),
+                            update_hashtree(Bucket, Key, Val, StateData),
+                            update_index_write_stats(IndexBackend, IndexSpecs),
+                            riak_kv_stat:update(vnode_put);
                         _ ->
                             nop
                     end,
                     Res
             end
     end.
+
+update_hashtree(Bucket, Key, Val, #state{hashtrees=Trees}) ->
+    index_hashtree:insert_object({Bucket, Key}, Val, Trees).
 
 %% @private
 
